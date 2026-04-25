@@ -234,5 +234,5 @@ data = Data(
     num_classes=2
 )
 torch.save(data, OUT_GRAPH)
-pd.DataFrame({'user_id': user_id_list}).to_csv('../data_process/user_id_list.csv', index=False)
+pd.DataFrame({'user_id': user_id_list}).to_csv('user_id_list.csv', index=False)
 print(f"图数据已保存至 {OUT_GRAPH}")
