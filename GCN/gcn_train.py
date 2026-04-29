@@ -5,10 +5,11 @@ from torch_geometric.data import Data
 from sklearn.metrics import classification_report, roc_auc_score
 import numpy as np
 from collections import Counter
+import pandas as pd
 
 
 # ==================== 配置 ====================
-GRAPH_PATH = "../data_process/graph_data.pt"
+GRAPH_PATH = "../output/graph_data.pt"
 EPOCHS = 300
 LR = 0.01
 HIDDEN = 64
@@ -112,37 +113,43 @@ test_true = data.y[data.test_mask].cpu().numpy()
 test_pred = test_pred[data.test_mask].cpu().numpy()
 print(classification_report(test_true, test_pred, target_names=['normal','malicious'], digits=4))
 
-# ---------- 对未知用户进行预测 ----------
+# ---------- 对未知用户进行预测（保持原有逻辑，同时计算所有节点的恶意概率）----------
 unknown_mask = (data.y == -1)
 if unknown_mask.sum() > 0:
     print(f"\n对 {unknown_mask.sum().item()} 个未知用户进行预测...")
-    model.eval()
-    # 用torch.no_grad()关闭梯度计算，彻底解决报错
-    with torch.no_grad():
-        out = model(data)
-        prob = out.exp()  # 转换为类别概率
-        mal_prob = prob[unknown_mask][:, 1].cpu().numpy()  # 提取恶意用户概率
-    # 分类阈值，可根据验证集效果调整
-    threshold = 0.5
-    pred_labels = (mal_prob >= threshold).astype(int)
 
-    print("恶意概率均值: {:.4f}，中位数: {:.4f}".format(mal_prob.mean(), np.median(mal_prob)))
-    print(f"预测高风险恶意用户数量: {(pred_labels == 1).sum()}")
+# 对所有节点做一次推理，得到恶意概率
+model.eval()
+with torch.no_grad():
+    logits = model(data)
+    prob = logits.exp()       # shape: [num_nodes, 2]
+    mal_prob_all = prob[:, 1].cpu().numpy()    # 第二个类（恶意）的概率
+    pred_all = (mal_prob_all >= 0.5).astype(int)
 
-    # 【毕设加分可选】把预测结果和用户ID关联，保存为CSV文件
-    # 先在data_preprocess.py末尾加上这行，保存用户ID列表：
-    #
-    # 取消下方注释即可生成结果文件
-    import pandas as pd
-    user_id_df = pd.read_csv('../data_process/user_id_list.csv')
-    unknown_user_ids = user_id_df[unknown_mask.cpu().numpy()]['user_id'].values
-    result_df = pd.DataFrame({
-        'user_id': unknown_user_ids,
-        'malicious_prob': mal_prob,
-        'pred_label': pred_labels
-    })
-    result_df.to_csv('malicious_user_predictions.csv', index=False, encoding='utf-8-sig')
-    print("预测结果已保存至 malicious_user_predictions.csv")
+# 输出未知用户统计
+if unknown_mask.sum() > 0:
+    mal_prob_unknown = mal_prob_all[unknown_mask.cpu().numpy()]
+    pred_unknown = pred_all[unknown_mask.cpu().numpy()]
+    print("恶意概率均值: {:.4f}，中位数: {:.4f}".format(mal_prob_unknown.mean(), np.median(mal_prob_unknown)))
+    print(f"预测高风险恶意用户数量: {(pred_unknown == 1).sum()}")
 
-else:
-    print("没有未知用户需要预测。")
+    # 保存训练好的模型（state_dict）
+    torch.save(model.state_dict(), "../output/GCN_model.pt")
+    print("模型已保存至 ../output/GCN_model.pt")
+
+    # --------------------- 合并用户信息并导出最终表 ---------------------
+    print("\n正在生成最终用户表...")
+    users_raw = pd.read_csv("../output/users_raw.csv", dtype={'_id': str})
+    # 确保顺序与图节点一致（data_preprocess中按user_id_list顺序构造特征，users_raw正是以此顺序保存）
+    # 添加模型预测结果
+    users_raw['mal_prob'] = mal_prob_all
+    users_raw['is_malicious'] = pred_all.astype(int)
+
+    # 可选：将预测标签转换为更易读的文本
+    # users_raw['predicted_type'] = users_raw['is_malicious'].map({0: 'normal', 1: 'malicious'})
+
+    # 保存最终用户表（包含原始 user_type 以便对比，最终交付可移除该列）
+    users_raw.drop(columns=['user_type'], inplace=True)
+    users_raw.to_csv("../output/users.csv", index=False, encoding='utf-8-sig')
+    print("最终用户表已保存至 ../output/users.csv")
+    print("包含列：", users_raw.columns.tolist())

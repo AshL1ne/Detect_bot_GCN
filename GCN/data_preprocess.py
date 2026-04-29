@@ -11,8 +11,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==================== 配置 ====================
-DIR = "../output"                       # JSONL 文件夹路径
-OUT_GRAPH = "graph_data.pt"             # 输出的图数据文件
+DIR = "../data"  # JSONL 文件夹路径
+OUT_GRAPH = "../output/graph_data.pt"           # 输出的图数据文件
 RANDOM_SEED = 42
 # ==============================================
 
@@ -65,8 +65,13 @@ for col in ['followers_count', 'follow_count', 'statuses_count', 'mbrank', 'mbty
 full_users['verified'] = full_users['verified'].fillna(False).astype(int)
 full_users['gender'] = full_users['gender'].map({'m': 0, 'f': 1, '': -1}).fillna(-1).astype(int)
 
+# ========== 新增特征：关注/粉丝比 ==========
+# +1 防止除零，该比值越大表示用户更偏向“关注者”而非被关注者
+full_users['follower_follow_ratio'] = full_users['follow_count'] / (full_users['followers_count'] + 1)
+# ============================================
+
 # 关键词检测函数
-WX_WORDS = ['微信', 'vx', 'VX', 'wechat', 'WeChat', 'wx']
+WX_WORDS = ['微信', '微x','v信','vx', 'VX', 'wechat', 'WeChat', 'wx']
 INVEST_WORDS = ['投资', '月入' '理财', '分红']
 FRIEND_WORDS = ['交友', '真诚交友', '诚心交友']
 
@@ -89,7 +94,7 @@ tweets_df['created_at'] = pd.to_datetime(tweets_df['created_at'],
 tweets_df['is_forward'] = tweets_df['is_retweet'].fillna(False).astype(bool)
 
 # 安全转发关键词
-SAFE_FORWARD_KW = ['转评赞', '抽取', '随机抽', '锦鲤', '好运']
+SAFE_FORWARD_KW = ['转评赞', '抽取', '抽送','随机抽', '锦鲤', '好运']
 
 def is_safe_forward(row):
     """判断转发是否属于安全转发：被转发的原微博内容包含安全关键词"""
@@ -110,6 +115,7 @@ user_tweet_feats = defaultdict(lambda: {
     'original_count': 0,
     'forward_count': 0,
     'total_tweets': 0,
+    'original_ratio': 0.0,
     'avg_interact': 0.0,
     'freq_forward_bursts': 0,
     'friendword_ratio': 0.0
@@ -123,6 +129,9 @@ for uid, grp in tqdm(tweets_df.groupby('user_id'), desc="聚合微博特征"):
     forwards = grp['is_forward'].sum()
     feats['original_count'] = originals
     feats['forward_count'] = forwards
+
+    # 原创微博占比 = 原创数 / 总微博数，避免除零
+    feats['original_ratio'] = originals / total if total > 0 else 0.0
 
     # 平均互动
     interact = grp['reposts_count'].fillna(0) + grp['attitudes_count'].fillna(0)
@@ -153,8 +162,9 @@ feature_cols = [
     'followers_count', 'follow_count', 'statuses_count',
     'mbrank', 'mbtype', 'verified', 'gender',
     'desc_has_wx', 'desc_has_invest', 'nick_has_wx',
-    'original_count', 'forward_count', 'total_tweets',
-    'avg_interact', 'freq_forward_bursts', 'friendword_ratio'
+    'original_count', 'forward_count', 'total_tweets','original_ratio',
+    'avg_interact', 'freq_forward_bursts', 'friendword_ratio',
+    'follower_follow_ratio'
 ]
 # 确保没有缺失
 full_users[feature_cols] = full_users[feature_cols].fillna(0).astype(float)
@@ -234,5 +244,34 @@ data = Data(
     num_classes=2
 )
 torch.save(data, OUT_GRAPH)
-pd.DataFrame({'user_id': user_id_list}).to_csv('user_id_list.csv', index=False)
 print(f"图数据已保存至 {OUT_GRAPH}")
+
+# ===================== 新增：导出 CSV =====================
+# 1. 用户原始表（不含模型预测，只保留后端需要的列）
+user_out_cols = [
+    '_id', 'nick_name', 'description', 'gender',
+    'followers_count', 'follow_count', 'statuses_count',
+    'verified', 'mbrank', 'mbtype', 'user_type',   # 保留原始标签以便核对
+    'original_count', 'forward_count'
+]
+users_raw_df = full_users[user_out_cols].copy()
+users_raw_df.to_csv("../output/users_raw.csv", index=False, encoding='utf-8-sig')
+print("用户原始信息已保存至 ../output/users_raw.csv")
+
+# 2. 关系表（关注关系，不分来源）
+rel_rows = []
+for rec in follow_records:
+    follower = str(rec.get('fan_id'))
+    followee = str(rec.get('follow_id'))
+    if follower in user_to_idx and followee in user_to_idx:
+        rel_rows.append({'follower_id': follower, 'followee_id': followee})
+
+for rec in all_fan_records:
+    follower = str(rec.get('fan_id'))
+    followee = str(rec.get('followed_id'))
+    if follower in user_to_idx and followee in user_to_idx:
+        rel_rows.append({'follower_id': follower, 'followee_id': followee})
+
+relations_df = pd.DataFrame(rel_rows).drop_duplicates()
+relations_df.to_csv("../output/relations.csv", index=False, encoding='utf-8-sig')
+print(f"关系表已保存至 ../output/relations.csv，共 {len(relations_df)} 条关系")
