@@ -10,13 +10,12 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
 
-# ==================== 配置 ====================
-DIR = "../data"  # JSONL 文件夹路径
-OUT_GRAPH = "../output/graph_data.pt"           # 输出的图数据文件
-RANDOM_SEED = 42
-# ==============================================
 
-# ---------- 1. 读取 JSONL ----------
+DIR = "../data"  # JSONL 文件夹路径
+OUT_GRAPH = "../output/graph_data.pt"
+RANDOM_SEED = 42
+
+# 1. 读取 JSONL
 def load_jsonl_files(dir_path, prefix):
     records = []
     for fname in os.listdir(dir_path):
@@ -40,8 +39,9 @@ all_fan_records = fan_records + fan_fan_records
 tweets_df = pd.DataFrame(tweet_records)
 print(f"用户: {len(user_records)}, 关注: {len(follow_records)}, 粉丝关系: {len(all_fan_records)}, 微博: {len(tweets_df)}")
 
-# ---------- 2. 合并所有用户节点 ----------
+# 2. 合并所有用户节点
 all_user_dict = {}
+
 for rec in user_records:
     all_user_dict[rec['_id']] = rec
 # 从关系数据中提取嵌套用户
@@ -58,17 +58,17 @@ full_users = pd.DataFrame(all_user_dict.values())
 full_users['_id'] = full_users['_id'].astype(str)
 print(f"图中总用户数: {len(full_users)}")
 
-# ---------- 3. 基础特征提取 ----------
+# 3. 基础特征提取
 # 数值特征
 for col in ['followers_count', 'follow_count', 'statuses_count', 'mbrank', 'mbtype']:
     full_users[col] = pd.to_numeric(full_users[col], errors='coerce').fillna(0)
 full_users['verified'] = full_users['verified'].fillna(False).astype(int)
 full_users['gender'] = full_users['gender'].map({'m': 0, 'f': 1, '': -1}).fillna(-1).astype(int)
 
-# ========== 新增特征：关注/粉丝比 ==========
+
 full_users['follower_follow_ratio'] = full_users['follow_count'] / (full_users['followers_count'] + 1)
 
-# 关键词检测函数
+# 关键词检测
 WX_WORDS = ['微信', '微x','v信','vx', 'VX', 'wechat', 'WeChat', 'wx']
 INVEST_WORDS = ['投资', '月入' '理财', '分红']
 FRIEND_WORDS = ['交友', '真诚交友', '诚心交友']
@@ -82,7 +82,7 @@ full_users['desc_has_wx'] = full_users['description'].apply(lambda x: contains_a
 full_users['desc_has_invest'] = full_users['description'].apply(lambda x: contains_any(x, INVEST_WORDS)).astype(int)
 full_users['nick_has_wx'] = full_users['nick_name'].apply(lambda x: contains_any(x, WX_WORDS)).astype(int)
 
-# ---------- 4. 微博行为特征 ----------
+# 4. 微博行为特征
 tweets_df['user_id'] = tweets_df['user_id'].astype(str)
 tweets_df['created_at'] = pd.to_datetime(
     tweets_df['created_at'],
@@ -145,7 +145,7 @@ full_users = full_users.join(tweet_feat_df, on='_id')
 for c in tweet_feat_df.columns:
     full_users[c] = full_users[c].fillna(0)
 
-# ---------- 5. 特征矩阵 ----------
+# 5. 特征矩阵
 feature_cols = [
     'followers_count', 'follow_count', 'statuses_count',
     'mbrank', 'mbtype', 'verified', 'gender',
@@ -154,6 +154,7 @@ feature_cols = [
     'avg_interact', 'freq_forward_bursts', 'friendword_ratio',
     'follower_follow_ratio'
 ]
+
 full_users[feature_cols] = full_users[feature_cols].fillna(0).astype(float)
 
 X = full_users[feature_cols].values
@@ -161,12 +162,12 @@ scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 x_tensor = torch.tensor(X_scaled, dtype=torch.float)
 
-# ---------- 6. 标签 ----------
+# 6. 标签
 label_map = {'normal': 0, 'malicious': 1, 'unknown': -1}
 y = full_users['user_type'].map(label_map).fillna(-1).astype(int).tolist()
 y_tensor = torch.tensor(y, dtype=torch.long)
 
-# ---------- 7. 构建图 ----------
+# 7. 构建图
 user_id_list = full_users['_id'].tolist()
 user_to_idx = {uid: i for i, uid in enumerate(user_id_list)}
 
@@ -194,7 +195,7 @@ edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
 
 print(f"图节点: {x_tensor.shape[0]}, 边数: {edge_index.shape[1]}")
 
-# ---------- 8. 划分训练/验证/测试掩码 ----------
+# 8. 划分训练/验证/测试掩码
 from sklearn.model_selection import train_test_split
 
 labeled_mask = y_tensor >= 0
@@ -228,15 +229,15 @@ data = Data(
     num_classes=2
 )
 
-# ===== 新增：保存 idx -> user_id 映射，方便训练/可视化阶段用 =====
+# 保存 idx -> user_id 映射，方便训练/可视化阶段用
 data.user_ids = user_id_list              # Python list[str]
 data.feature_cols = feature_cols          # 方便排查维度/回溯
-# =============================================================
+
 
 torch.save(data, OUT_GRAPH)
 print(f"图数据已保存至 {OUT_GRAPH}")
 
-# ===================== 导出 CSV =====================
+# 导出 CSV
 user_out_cols = [
     '_id', 'nick_name', 'description', 'gender',
     'followers_count', 'follow_count', 'statuses_count',

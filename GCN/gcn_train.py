@@ -27,7 +27,6 @@ MODEL_OUT = "../output/GCN_model.pt"
 PLOT_DIR = "../output/plots"
 PRINT_EVERY = 20
 
-# ---- 曲线保存文件名 ----
 LOSS_PNG = "loss_curve.png"
 ACC_PNG = "acc_curve.png"
 AUC_PNG = "auc_curve.png"
@@ -35,10 +34,10 @@ PREC_PNG = "precision_curve.png"
 REC_PNG = "recall_curve.png"
 F1_PNG = "f1_curve.png"
 
-# ---- 网络图输出目录 ----
-NET_DIR = os.path.join(PLOT_DIR, "networks_by_pred_label")
+# 网络图输出
+NET_DIR = os.path.join(PLOT_DIR, "networks")
 
-# ---- 网络图样式参数 ----
+# 网络图参数
 LAYOUT_SEED = 42
 NODE_ALPHA = 0.95
 EDGE_COLOR = "#7f7f7f"
@@ -72,17 +71,15 @@ KEEP_LARGEST_CC = True
 # 颜色：normal 蓝，malicious 红
 COLOR_NORMAL = "#1f77b4"
 COLOR_MAL = "#d62728"
-# ==============================================
 
 
 def ensure_dir(p: str):
     os.makedirs(p, exist_ok=True)
 
-
-# 固定随机种子
-torch.manual_seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-random.seed(RANDOM_SEED)
+# 固定随机种子，保证实验可复现
+torch.manual_seed(RANDOM_SEED) # PyTorch 的随机数
+np.random.seed(RANDOM_SEED)    # NumPy 的随机数
+random.seed(RANDOM_SEED)       # Python 自带的随机数
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -92,7 +89,7 @@ print(f"加载图数据：节点数 {data.num_nodes}, 特征维度 {data.num_fea
 data = data.to(device)
 
 
-# ---------- GCN 模型 ----------
+# GCN
 class GCN(torch.nn.Module):
     def __init__(self, in_dim, hidden_dim, out_dim, dropout):
         super().__init__()
@@ -102,11 +99,11 @@ class GCN(torch.nn.Module):
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.conv2(x, edge_index)
-        return F.log_softmax(x, dim=1)
+        x = self.conv1(x, edge_index)   # 输入特征 -> 隐藏层 (64维)
+        x = F.relu(x)                  # ReLU激活
+        x = F.dropout(x, p=self.dropout, training=self.training) # Dropout-0.5，防止过拟合
+        x = self.conv2(x, edge_index)  # 隐藏层 -> 输出层 (2维，二分类)
+        return F.log_softmax(x, dim=1) # log_softmax用于分类
 
 
 model = GCN(
@@ -117,23 +114,25 @@ model = GCN(
 ).to(device)
 
 
-# ---------- 损失函数（加权） ----------
+# 损失函数（加权
 labels = data.y[data.train_mask].detach().cpu().numpy()
-cnt = Counter(labels)
+cnt = Counter(labels) # 如{0: 300, 1: 100}
 total = sum(cnt.values())
+# 权重 = 总样本数 ÷ (类别数 × 当前类别样本数)
 weights = [total / (2 * cnt.get(cls, 1)) for cls in range(2)]
 class_weights = torch.tensor(weights, dtype=torch.float, device=device)
-criterion = torch.nn.NLLLoss(weight=class_weights)
+criterion = torch.nn.NLLLoss(weight=class_weights)  # 带权重的负对数似然损失
+# Adam 的优化器，根据损失自动修改模型的权重
 optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
 
-# ---------- 指标 ----------
+# 指标
 def binary_prf(y_true, y_pred, pos_label=1):
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
     if y_true.size == 0 or len(np.unique(y_true)) < 2:
         return 0.0, 0.0, 0.0
-
+    # 不需要返回support
     p, r, f1, _ = precision_recall_fscore_support(
         y_true, y_pred, average="binary", pos_label=pos_label, zero_division=0
     )
@@ -142,13 +141,14 @@ def binary_prf(y_true, y_pred, pos_label=1):
 
 @torch.no_grad()
 def eval_acc_auc(mask):
-    model.eval()
+    model.eval() # 评估模式（关闭 dropout 等训练专用机制）
     out = model(data)
     pred = out.argmax(dim=1)
 
     correct = (pred[mask] == data.y[mask]).sum()
     acc = correct.item() / mask.sum().item()
 
+    # exp变回正常概率
     prob_mal = out.exp()[:, 1]
     true = data.y[mask].detach().cpu().numpy()
     score = prob_mal[mask].detach().cpu().numpy()
@@ -185,14 +185,14 @@ def eval_test_full():
     }
 
 
-# ---------- 训练 ----------
+# 训练
 def train_one_epoch():
     model.train()
     optimizer.zero_grad()
     out = model(data)
     loss = criterion(out[data.train_mask], data.y[data.train_mask])
-    loss.backward()
-    optimizer.step()
+    loss.backward() # 反向传播算梯度
+    optimizer.step() # 改权重
     return float(loss.item())
 
 
@@ -242,7 +242,7 @@ if best_state is not None:
 print(f"\n最佳验证集准确率: {best_val_acc:.4f}")
 
 
-# ---------- 最终测试评估 ----------
+# 最终测试评估
 print("\n=== 测试集评估 ===")
 test = eval_test_full()
 print(
@@ -255,7 +255,7 @@ test_pred = test["pred_all"][data.test_mask].detach().cpu().numpy()
 print(classification_report(test_true, test_pred, target_names=["normal", "malicious"], digits=4))
 
 
-# ---------- 推理所有节点（用于画图 & 导出表）+ 保存模型 ----------
+# 推理所有节点（用于画图 & 导出表）+ 保存模型
 unknown_mask = (data.y == -1)
 if unknown_mask.sum() > 0:
     print(f"\n对 {unknown_mask.sum().item()} 个未知用户进行预测...")
@@ -277,7 +277,7 @@ torch.save(model.state_dict(), MODEL_OUT)
 print(f"模型已保存至 {MODEL_OUT}")
 
 
-# ---------- 生成最终用户表 ----------
+# 最终用户表
 print("\n正在生成最终用户表...")
 users_raw = pd.read_csv("../output/users_raw.csv", dtype={"_id": str})
 users_raw["mal_prob"] = mal_prob_all
@@ -287,12 +287,12 @@ users_raw.to_csv("../output/users.csv", index=False, encoding="utf-8-sig")
 print("最终用户表已保存至 ../output/users.csv")
 print("包含列：", users_raw.columns.tolist())
 
-
-# ---------- 画曲线 ----------
+'''
+# 曲线
 ensure_dir(PLOT_DIR)
 import matplotlib.pyplot as plt
 
-# 中文字体（避免 warning）
+# 中文字体（避免中文显示成方块）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
@@ -317,7 +317,7 @@ save_curve(history["test_f1"], "f1", "Test F1-score", os.path.join(PLOT_DIR, F1_
 print(f"\n曲线图已保存至 {PLOT_DIR}")
 
 
-# ---------- 网络图：全图 + 同类诱导子图 + 2-hop（全部中心 & 恶意 Top-K） ----------
+# 网络图：全图 + 同类诱导子图 + 2-hop（全部中心 & 恶意 Top-K）
 def build_nx_graph(edge_index):
     import networkx as nx
     g = nx.Graph()
@@ -433,11 +433,11 @@ try:
     ensure_dir(NET_DIR)
     g_all = build_nx_graph(data.edge_index)
 
-    # 1) 全图（按预测上色）
+    # 1) 全图
     out_full = os.path.join(NET_DIR, "full_social_network_by_pred.png")
     draw_full_graph_by_pred(g_all, pred_all, out_full)
 
-    # 2) 同类诱导子图（按预测）
+    # 2) 同类诱导子图
     out_normal = os.path.join(NET_DIR, "pred_normal_social_graph.png")
     out_mal = os.path.join(NET_DIR, "pred_malicious_social_graph.png")
 
@@ -459,7 +459,7 @@ try:
         out_path=out_mal,
     )
 
-    # 3) 2-hop（全部中心）——可选保留对比
+    # 3) 2-hop（全部中心）
     if DRAW_ALL_CENTERS_2HOP:
         out_normal_2hop = os.path.join(NET_DIR, "pred_normal_centers_2hop_all.png")
         out_mal_2hop = os.path.join(NET_DIR, "pred_malicious_centers_2hop_all.png")
@@ -506,3 +506,5 @@ try:
 
 except Exception as e:
     print(f"网络图生成失败：{e}")
+
+'''
